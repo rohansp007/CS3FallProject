@@ -108,7 +108,7 @@ def linear_gradient(colors, normalizedZero2One):
 
 
 def normalize(value, minValue, maxValue, doesCap=False):
-    output = (value - minValue) / (maxValue - minValue)
+    output = (value - minValue) / (maxValue - minValue + 1e-10)
     if doesCap:
         if output > 1:
             output = 1

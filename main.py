@@ -7,7 +7,6 @@ from calcs import distance
 from calcs import ang, normalize_angle
 from calcs import draw_arrow
 from calcs import linear_gradient
-from calcs import generate_gradient
 from calcs import normalize
 import noise
 
@@ -88,10 +87,10 @@ class TileHandler:
             self.gridSizeX = int(width / self.horizontal_distance) + 1
             self.gridSizeY = int(height / self.vertical_distance) + 1
         elif tileType == Triangle:
-            self.horizontal_distance = size + spacing
-            self.vertical_distance = (math.sqrt(3) / 2 * size) + spacing
+            self.horizontal_distance = size / 2 + spacing
+            self.vertical_distance = (math.sqrt(3) / 2 * size) + spacing - 2
             self.gridSizeX = int(width / self.horizontal_distance) + 2
-            self.gridSizeY = int(height / self.vertical_distance) + 1
+            self.gridSizeY = int(height / self.vertical_distance) + 2
         else:
             raise NotImplementedError("Tile type not supported")
 
@@ -140,9 +139,9 @@ class TileHandler:
             elif isinstance(tile, Triangle):
                 # Triangle grid neighbors (assuming pointy-topped or flat-topped)
                 if tile.index % 2 == 0:
-                    offsets = [(0, -1), (-1, 1), (1, 1)]
+                    offsets = [(1, 1), (-1, 0), (1, 0)]
                 else:
-                    offsets = [(0, 1), (-1, -1), (1, -1)]
+                    offsets = [(1, -1), (-1, 0), (1, 0)]
 
             for dx, dy in offsets:
                 neighbor_grid_x = tile.grid_x + dx
@@ -158,16 +157,22 @@ class TileHandler:
         return None
 
     def update(self):
-        shifts = []
-        for tile in self.tiles:
-            sizesSum = sum([adj.size for adj in tile.adjacent]) / len(tile.adjacent)
-            shifts.append((sizesSum - self.size) / 300)
+        self.shifterMomentum[0] += random.uniform(-0.5, 0.5)
+        self.shifterMomentum[1] += random.uniform(-0.2, 0.5)
+        for _ in range(2):
+            self.shifterMomentum[_] *= 0.95
+            self.shifter[_] += self.shifterMomentum[_]
+        scale = 300.0  # Controls the zoom level of the noise
+        octaves = 30  # Number of levels of detail
+        persistence = 0.5  # Controls the amplitude of the noise
+        lacunarity = 2.0  # Controls the frequency of the noise
         for i, tile in enumerate(self.tiles):
-            tile.momentum += shifts[i]
-            tile.momentum *= 0.98
-            tile.size += tile.momentum
-            tile.size = min(tile.originalSize + tile.sizeVariance, max(tile.originalSize - tile.sizeVariance, tile.size))
-            tile.colIndex = normalize(tile.size, tile.originalSize - tile.sizeVariance, tile.originalSize + tile.sizeVariance, True)
+            n = noise.pnoise2((tile.x + self.shifter[0] / 2) / scale, (tile.y + self.shifter[1]) / scale, octaves=octaves, persistence=persistence, lacunarity=lacunarity)
+            n += noise.pnoise2((tile.x - self.shifter[0] / 2 + 1000) / scale, (tile.y - self.shifter[1] + 1000) / scale, octaves=octaves, persistence=persistence, lacunarity=lacunarity) / 2
+            distributionCaps = 0.2
+            normalized = normalize(n, -distributionCaps, distributionCaps, True)
+            tile.size = max(min(normalized * tile.originalSize, tile.originalSize + self.sizeVariance), tile.originalSize - self.sizeVariance)
+            tile.colIndex = normalized
             tile.col = linear_gradient(self.cols, tile.colIndex - 1e-10)
 
     def draw(self, s, showArrows):
@@ -218,13 +223,15 @@ class Square(Tile):
 
     def draw(self, s):
         half_size = self.size / 2
-        points = [
-            (self.x - half_size, self.y - half_size),
-            (self.x + half_size, self.y - half_size),
-            (self.x + half_size, self.y + half_size),
-            (self.x - half_size, self.y + half_size)
-        ]
+        points = [(self.x - half_size, self.y - half_size), (self.x + half_size, self.y - half_size), (self.x + half_size, self.y + half_size), (self.x - half_size, self.y + half_size)]
         pygame.draw.polygon(s, self.col, points)
+
+    def drawArrows(self, s):
+        for adj in self.adjacent:
+            angle = normalize_angle(ang((self.x, self.y), (adj.x, adj.y)))
+            dist = distance((self.x, self.y), (adj.x, adj.y))
+            factor = 0.35
+            draw_arrow(s, (self.x, self.y), (self.x + dist * factor * math.cos(angle), self.y + dist * factor * math.sin(angle)), Endesga.debug_red, pygame, 2, 5, 25)
 
 
 class Triangle(Tile):
@@ -236,18 +243,75 @@ class Triangle(Tile):
         half_size = self.size / 2
         height = (math.sqrt(3) / 2) * self.size
         if self.index % 2 == 0:
-            points = [
-                (self.x, self.y - height / 2),
-                (self.x - half_size, self.y + height / 2),
-                (self.x + half_size, self.y + height / 2)
-            ]
+            points = [(self.x, self.y - height / 2), (self.x - half_size, self.y + height / 2), (self.x + half_size, self.y + height / 2)]
         else:
-            points = [
-                (self.x, self.y + height / 2),
-                (self.x - half_size, self.y - height / 2),
-                (self.x + half_size, self.y - height / 2)
-            ]
+            points = [(self.x, self.y + height / 2), (self.x - half_size, self.y - height / 2), (self.x + half_size, self.y - height / 2)]
         pygame.draw.polygon(s, self.col, points)
+
+    def drawArrows(self, s):
+        for adj in self.adjacent:
+            angle = normalize_angle(ang((self.x, self.y), (adj.x, adj.y)))
+            dist = distance((self.x, self.y), (adj.x, adj.y))
+            factor = 0.35
+            draw_arrow(s, (self.x, self.y), (self.x + dist * factor * math.cos(angle), self.y + dist * factor * math.sin(angle)), Endesga.debug_red, pygame, 2, 5, 25)
+
+
+class Node:
+    def __init__(self, parent, tile, g=0, f=0, h=0, children=None):
+        self.parent = parent
+        self.tile = tile
+        self.g = g
+        self.f = f
+        self.h = h
+        self.children = [] if children is None else children
+
+
+class Tree:
+    def __init__(self, root):
+        self.root = root
+        # self.collected = []
+        # self.queue = []
+        self.open = [self.root]
+        self.openPositions = {(self.root.tile.x, self.root.tile.y) : self.root}
+        self.closed = []
+
+    def search(self, final):
+        while len(self.open) > 0:
+            current = sorted(self.open, key=lambda n: n.f)[0]
+            self.open.remove(current)
+            self.closed.append(current)
+
+            if current == final:
+                return self.getPath(current)
+
+            current.children = [Node(current, adj) for adj in current.tile.adjacent]
+            for child in current.children:
+                if child in self.closed:
+                    continue
+
+                child.g = current.g + 1
+                child.h = distance((final.x, final.y), (child.tile.x, child.tile.y))
+                child.f = child.g + child.h
+
+                if (child.tile.x, child.tile.y) in self.openPositions.keys():
+                    copies = [node for node in self.openPositions[]]
+
+                self.open.append(child)
+                self.openPositions[(child.tile.x, child.tile.y)] = child
+
+    def getPath(self, node):
+        pass
+
+    # def buildTree(self):
+    #     self.buildTreeHelper(self.root, 0)
+    #     self.queue = sorted(self.queue, key=lambda n: n['depth'])
+    #
+    # def buildTreeHelper(self, tile, depth):
+    #     for adj in tile.adjacent:
+    #         if adj not in self.collected:
+    #             self.queue.append({'depth': depth, "tile": adj})
+    #             self.collected.append(adj)
+    #     for
 
 
 # ICE
@@ -318,9 +382,9 @@ light = (40, 43, 88)
 # colRange = generate_gradient(dark, light, 5)
 print(colRange)
 
-tileSize = 20
-tileSpacing = 5
-tileSizeVariance = 5
+tileSize = 25
+tileSpacing = 0
+tileSizeVariance = 0
 TH = TileHandler(screen_width, screen_height, tileSize, Hex, tileSpacing, tileSizeVariance, colRange)
 
 # ---------------- Main Game Loop
@@ -356,12 +420,8 @@ while running:
         if event.type == pygame.KEYUP:
             pass
 
-    TH.draw(screen2, True)
+    TH.draw(screen2, False)
     TH.update()
-
-    # for t in TH.tiles:
-    #     if distance((t.x, t.y), (mx, my)) < 50:
-    #         t.size += random.randint(-10, 10)
 
     # ---------------- Updating Screen
     if toggle:
