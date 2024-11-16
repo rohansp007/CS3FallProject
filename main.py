@@ -105,7 +105,8 @@ class TileHandler:
                 self.tile_map[(round(tile.x), round(tile.y))] = tile  # Map position to tile
 
         for tile in self.tiles:
-            if random.random() < (self.wallProb * (tile.x / self.maxWidth) ** 0.5):
+            dist = (distance((tile.x, tile.y), (self.maxWidth, self.maxHeight)) / distance((0, 0), (self.maxWidth, self.maxHeight)))
+            if random.random() < (self.wallProb * (1 - dist) ** 0.3):
                 tile.isWall = True
                 tile.momentum = 1
 
@@ -131,11 +132,11 @@ class TileHandler:
                     tile.adjacent.append(grid_dict[(neighbor_grid_x, neighbor_grid_y)])
 
     def aggregate(self):
-        for _ in range(5):
+        for _ in range(1):
             shifts = []
             for tile in self.tiles:
                 momentumSum = sum([adj.momentum for adj in tile.adjacent]) / len(tile.adjacent)
-                shifts.append((momentumSum - tile.momentum) / 10)
+                shifts.append((momentumSum - tile.momentum) / 1)
             for _, tile in enumerate(self.tiles):
                 tile.momentum += shifts[_]
         for _, tile in enumerate(self.tiles):
@@ -283,7 +284,7 @@ class Tree:
 
 backgroundBaseSearchedWallFoundColors = [[19, 2, 8], [49, 5, 30], [124, 24, 60], [24, 4, 12], [255, 130, 116]]
 
-tileSize = 10
+tileSize = 3
 tileSpacing = 2
 tileSizeVariance = 0
 
@@ -291,11 +292,11 @@ wallProb = 0.6
 
 distanceFromTopLeft = 0.05
 TH = TileHandler(screen_width, screen_height, tileSize, Hex, tileSpacing, tileSizeVariance, backgroundBaseSearchedWallFoundColors, wallProb)
-startingIndex = int(int(distanceFromTopLeft * TH.gridSizeX) * TH.gridSizeY + int(distanceFromTopLeft * TH.gridSizeX))
+startingIndex = int(int(distanceFromTopLeft * TH.gridSizeX) * TH.gridSizeY + TH.gridSizeY - int(distanceFromTopLeft * TH.gridSizeX))
 while TH.tiles[startingIndex].isWall:
     startingIndex += 1
 tree = Tree(TH.tiles[startingIndex])
-tileIndex = 0
+tileIndex = None
 stepOutput = None
 
 # ---------------- Main Game Loop
@@ -343,7 +344,8 @@ while running:
         TH.get_tile_at_grid_position(round(nod[0]), round(nod[1])).searched = True
 
     TH.tiles[startingIndex].isPartOfPath = True
-    TH.tiles[tileIndex].isPartOfPath = True
+    if tileIndex is not None:
+        TH.tiles[tileIndex].isPartOfPath = True
 
     TH.draw(screen2, False)
     TH.update()
