@@ -6,9 +6,6 @@ from text import draw_text
 from calcs import distance
 from calcs import ang, normalize_angle
 from calcs import draw_arrow
-from calcs import linear_gradient
-from calcs import normalize
-import noise
 
 pygame.init()
 
@@ -66,29 +63,23 @@ click = False
 
 
 class TileHandler:
-    def __init__(self, width, height, size, tileType, spacing, sizeVariance, cols):
+    def __init__(self, width, height, size, tileType, spacing, sizeVariance, backgroundBaseSearchedWallFoundCols, wallSpawnProb):
+        self.maxWidth = width
+        self.maxHeight = height
         self.size = size
         self.spacing = spacing
         self.tileType = tileType
         self.sizeVariance = sizeVariance
         self.tiles = []
-        self.cols = cols
+        self.tile_map = {}  # Position-to-tile map
+        self.backgroundBaseSearchedWallFoundCols = backgroundBaseSearchedWallFoundCols
         self.shifter = [0, 0]
         self.shifterMomentum = [0, 0]
+        self.wallProb = wallSpawnProb
 
         if tileType == Hex:
             self.horizontal_distance = (3 / 2 * size) + spacing
             self.vertical_distance = (math.sqrt(3) * size) + spacing
-            self.gridSizeX = int(width / self.horizontal_distance) + 2
-            self.gridSizeY = int(height / self.vertical_distance) + 2
-        elif tileType == Square:
-            self.horizontal_distance = size + spacing
-            self.vertical_distance = size + spacing
-            self.gridSizeX = int(width / self.horizontal_distance) + 1
-            self.gridSizeY = int(height / self.vertical_distance) + 1
-        elif tileType == Triangle:
-            self.horizontal_distance = size / 2 + spacing
-            self.vertical_distance = (math.sqrt(3) / 2 * size) + spacing - 2
             self.gridSizeX = int(width / self.horizontal_distance) + 2
             self.gridSizeY = int(height / self.vertical_distance) + 2
         else:
@@ -96,6 +87,7 @@ class TileHandler:
 
         self._generate_tiles()
         self._assign_adjacent_tiles()
+        self.aggregate()
 
     def _generate_tiles(self):
         for x in range(self.gridSizeX):
@@ -105,43 +97,31 @@ class TileHandler:
                     y_pos = self.vertical_distance * y
                     if x % 2 == 1:
                         y_pos += self.vertical_distance / 2
-                    self.tiles.append(self.tileType(x, y, x_pos, y_pos, self.size, self.sizeVariance))
-                elif self.tileType == Square:
-                    x_pos = self.horizontal_distance * x
-                    y_pos = self.vertical_distance * y
-                    self.tiles.append(self.tileType(x, y, x_pos, y_pos, self.size, self.sizeVariance))
-                elif self.tileType == Triangle:
-                    x_pos = self.horizontal_distance * x
-                    y_pos = self.vertical_distance * y
-                    if y % 2 == 1:
-                        x_pos -= self.horizontal_distance
-                    self.tiles.append(self.tileType(x, y, x_pos, y_pos, self.size, self.sizeVariance, x))
+                    tile = self.tileType(x, y, x_pos, y_pos, self.size, self.sizeVariance)
                 else:
                     raise NotImplementedError("Tile type not supported")
+
+                self.tiles.append(tile)
+                self.tile_map[(round(tile.x), round(tile.y))] = tile  # Map position to tile
+
+        for tile in self.tiles:
+            if random.random() < (self.wallProb * (tile.x / self.maxWidth) ** 0.5):
+                tile.isWall = True
+                tile.momentum = 1
+
+    def get_tile_at_grid_position(self, x, y):
+        return self.tile_map.get((x, y), None)
 
     def _assign_adjacent_tiles(self):
         grid_dict = {(tile.grid_x, tile.grid_y): tile for tile in self.tiles}
 
         for tile in self.tiles:
             tile.adjacent = []
-            offsets = []
 
-            if isinstance(tile, Hex):
-                # Hex grid neighbors (cube coordinates or axial coordinates)
-                if tile.grid_x % 2 == 0:
-                    offsets = [(1, 0), (-1, 0), (0, 1), (0, -1), (-1, -1), (1, -1)]
-                else:
-                    offsets = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1)]
-
-            elif isinstance(tile, Square):
-                # Square grid neighbors
-                offsets = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-            elif isinstance(tile, Triangle):
-                # Triangle grid neighbors (assuming pointy-topped or flat-topped)
-                if tile.index % 2 == 0:
-                    offsets = [(1, 1), (-1, 0), (1, 0)]
-                else:
-                    offsets = [(1, -1), (-1, 0), (1, 0)]
+            if tile.grid_x % 2 == 0:
+                offsets = [(1, 0), (-1, 0), (0, 1), (0, -1), (-1, -1), (1, -1)]
+            else:
+                offsets = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1)]
 
             for dx, dy in offsets:
                 neighbor_grid_x = tile.grid_x + dx
@@ -150,30 +130,23 @@ class TileHandler:
                 if (neighbor_grid_x, neighbor_grid_y) in grid_dict:
                     tile.adjacent.append(grid_dict[(neighbor_grid_x, neighbor_grid_y)])
 
-    def get_tile_at_position(self, x, y):
-        for tile in self.tiles:
-            if math.isclose(tile.x, x, abs_tol=self.horizontal_distance / 2) and math.isclose(tile.y, y, abs_tol=self.vertical_distance / 2):
-                return tile
-        return None
+    def aggregate(self):
+        for _ in range(5):
+            shifts = []
+            for tile in self.tiles:
+                momentumSum = sum([adj.momentum for adj in tile.adjacent]) / len(tile.adjacent)
+                shifts.append((momentumSum - tile.momentum) / 10)
+            for _, tile in enumerate(self.tiles):
+                tile.momentum += shifts[_]
+        for _, tile in enumerate(self.tiles):
+            self.tiles[_].isWall = tile.momentum > 0.5
 
     def update(self):
-        self.shifterMomentum[0] += random.uniform(-0.5, 0.5)
-        self.shifterMomentum[1] += random.uniform(-0.2, 0.5)
-        for _ in range(2):
-            self.shifterMomentum[_] *= 0.95
-            self.shifter[_] += self.shifterMomentum[_]
-        scale = 300.0  # Controls the zoom level of the noise
-        octaves = 30  # Number of levels of detail
-        persistence = 0.5  # Controls the amplitude of the noise
-        lacunarity = 2.0  # Controls the frequency of the noise
-        for i, tile in enumerate(self.tiles):
-            n = noise.pnoise2((tile.x + self.shifter[0] / 2) / scale, (tile.y + self.shifter[1]) / scale, octaves=octaves, persistence=persistence, lacunarity=lacunarity)
-            n += noise.pnoise2((tile.x - self.shifter[0] / 2 + 1000) / scale, (tile.y - self.shifter[1] + 1000) / scale, octaves=octaves, persistence=persistence, lacunarity=lacunarity) / 2
-            distributionCaps = 0.2
-            normalized = normalize(n, -distributionCaps, distributionCaps, True)
-            tile.size = max(min(normalized * tile.originalSize, tile.originalSize + self.sizeVariance), tile.originalSize - self.sizeVariance)
-            tile.colIndex = normalized
-            tile.col = linear_gradient(self.cols, tile.colIndex - 1e-10)
+        for _, tile in enumerate(self.tiles):
+            tile.col = self.backgroundBaseSearchedWallFoundCols[1]
+            tile.col2 = self.backgroundBaseSearchedWallFoundCols[2]
+            tile.wallCol = self.backgroundBaseSearchedWallFoundCols[3]
+            tile.pathCol = self.backgroundBaseSearchedWallFoundCols[4]
 
     def draw(self, s, showArrows):
         for tile in self.tiles:
@@ -184,7 +157,7 @@ class TileHandler:
 
 
 class Tile:
-    def __init__(self, grid_x, grid_y, x, y, size, sizeVariance, col=(0, 0, 0)):
+    def __init__(self, grid_x, grid_y, x, y, size, sizeVariance, col=(0, 0, 0), col2=(0, 0, 0), wallCol=(0, 0, 0), pathCol=(0, 0, 0)):
         self.grid_x = grid_x
         self.grid_y = grid_y
         self.x = x
@@ -193,9 +166,15 @@ class Tile:
         self.sizeVariance = sizeVariance
         self.size = size + random.randint(-self.sizeVariance, self.sizeVariance)
         self.col = col
+        self.col2 = col2
+        self.wallCol = wallCol
+        self.pathCol = pathCol
         self.adjacent = []
         self.colIndex = random.uniform(0, 1)
         self.momentum = 0
+        self.searched = False
+        self.isWall = False
+        self.isPartOfPath = False
 
     def draw(self, s):
         pass
@@ -207,46 +186,15 @@ class Hex(Tile):
 
     def draw(self, s):
         points = [(self.x + self.size * math.cos(math.pi / 3 * angle), self.y + self.size * math.sin(math.pi / 3 * angle)) for angle in range(6)]
-        pygame.draw.polygon(s, self.col, points)
-
-    def drawArrows(self, s):
-        for adj in self.adjacent:
-            angle = normalize_angle(ang((self.x, self.y), (adj.x, adj.y)))
-            dist = distance((self.x, self.y), (adj.x, adj.y))
-            factor = 0.35
-            draw_arrow(s, (self.x, self.y), (self.x + dist * factor * math.cos(angle), self.y + dist * factor * math.sin(angle)), Endesga.debug_red, pygame, 2, 5, 25)
-
-
-class Square(Tile):
-    def __init__(self, grid_x, grid_y, x, y, size, sizeVariance):
-        super().__init__(grid_x, grid_y, x, y, size, sizeVariance)
-
-    def draw(self, s):
-        half_size = self.size / 2
-        points = [(self.x - half_size, self.y - half_size), (self.x + half_size, self.y - half_size), (self.x + half_size, self.y + half_size), (self.x - half_size, self.y + half_size)]
-        pygame.draw.polygon(s, self.col, points)
-
-    def drawArrows(self, s):
-        for adj in self.adjacent:
-            angle = normalize_angle(ang((self.x, self.y), (adj.x, adj.y)))
-            dist = distance((self.x, self.y), (adj.x, adj.y))
-            factor = 0.35
-            draw_arrow(s, (self.x, self.y), (self.x + dist * factor * math.cos(angle), self.y + dist * factor * math.sin(angle)), Endesga.debug_red, pygame, 2, 5, 25)
-
-
-class Triangle(Tile):
-    def __init__(self, grid_x, grid_y, x, y, size, sizeVariance, index):
-        super().__init__(grid_x, grid_y, x, y, size, sizeVariance)
-        self.index = index
-
-    def draw(self, s):
-        half_size = self.size / 2
-        height = (math.sqrt(3) / 2) * self.size
-        if self.index % 2 == 0:
-            points = [(self.x, self.y - height / 2), (self.x - half_size, self.y + height / 2), (self.x + half_size, self.y + height / 2)]
+        if self.isWall:
+            pygame.draw.polygon(s, self.wallCol, points)
+        elif self.isPartOfPath:
+            pygame.draw.polygon(s, self.pathCol, points)
         else:
-            points = [(self.x, self.y + height / 2), (self.x - half_size, self.y - height / 2), (self.x + half_size, self.y - height / 2)]
-        pygame.draw.polygon(s, self.col, points)
+            if self.searched:
+                pygame.draw.polygon(s, self.col2, points)
+            else:
+                pygame.draw.polygon(s, self.col, points)
 
     def drawArrows(self, s):
         for adj in self.adjacent:
@@ -266,126 +214,89 @@ class Node:
         self.children = [] if children is None else children
 
 
+def getPath(finalNode):
+    out = []
+    while finalNode.parent is not None:
+        out.append(finalNode.parent)
+        finalNode = finalNode.parent
+    return out
+
+
 class Tree:
     def __init__(self, root):
-        self.root = root
-        # self.collected = []
-        # self.queue = []
+        self.root = Node(None, root)
+        self.final = None
         self.open = [self.root]
-        self.openPositions = {(self.root.tile.x, self.root.tile.y) : self.root}
-        self.closed = []
+        self.openPositions = {(self.root.tile.x, self.root.tile.y): self.root}
+        self.closed = {}
+        self.found = False
 
-    def search(self, final):
-        while len(self.open) > 0:
-            current = sorted(self.open, key=lambda n: n.f)[0]
-            self.open.remove(current)
-            self.closed.append(current)
+    def fullSearch(self, final):
+        self.open = [self.root]
+        self.openPositions = {(self.root.tile.x, self.root.tile.y): self.root}
+        self.closed = {}
+        self.final = final
+        self.found = False
 
-            if current == final:
-                return self.getPath(current)
+    def searchStep(self):
+        if not self.found:
+            if len(self.open) > 0:
+                # Get the node with the lowest f-value
+                current = sorted(self.open, key=lambda n: n.f)[0]
+                self.open.remove(current)
+                self.closed[(current.tile.x, current.tile.y)] = current
 
-            current.children = [Node(current, adj) for adj in current.tile.adjacent]
-            for child in current.children:
-                if child in self.closed:
-                    continue
+                # Check if we have reached the goal
+                if (current.tile.x, current.tile.y) == (self.final.x, self.final.y):
+                    self.found = True
+                    self.final = None
+                    return getPath(current)
 
-                child.g = current.g + 1
-                child.h = distance((final.x, final.y), (child.tile.x, child.tile.y))
-                child.f = child.g + child.h
+                # Process adjacent tiles
+                for adj in current.tile.adjacent:
+                    if adj.isWall:
+                        continue
 
-                if (child.tile.x, child.tile.y) in self.openPositions.keys():
-                    copies = [node for node in self.openPositions[]]
+                    # Check if the tile is already in the closed set
+                    if (adj.x, adj.y) in self.closed:
+                        continue
 
-                self.open.append(child)
-                self.openPositions[(child.tile.x, child.tile.y)] = child
+                    # Check if the tile is already in the open set
+                    if (adj.x, adj.y) in self.openPositions:
+                        node = self.openPositions[(adj.x, adj.y)]
+                        tentative_g = current.g + 1
+                        if tentative_g < node.g:
+                            node.g = tentative_g
+                            node.f = node.g + node.h
+                            node.parent = current
+                        continue
 
-    def getPath(self, node):
-        pass
-
-    # def buildTree(self):
-    #     self.buildTreeHelper(self.root, 0)
-    #     self.queue = sorted(self.queue, key=lambda n: n['depth'])
-    #
-    # def buildTreeHelper(self, tile, depth):
-    #     for adj in tile.adjacent:
-    #         if adj not in self.collected:
-    #             self.queue.append({'depth': depth, "tile": adj})
-    #             self.collected.append(adj)
-    #     for
+                    # Add new child node
+                    child = Node(current, adj)
+                    child.g = current.g + 1
+                    child.h = distance((self.final.x, self.final.y), (adj.x, adj.y))
+                    child.f = child.g + child.h
+                    self.open.append(child)
+                    self.openPositions[(adj.x, adj.y)] = child
+        return None
 
 
-# ICE
-# colRange = [[252, 9], [241, 59], [214, 64]]
+backgroundBaseSearchedWallFoundColors = [[19, 2, 8], [49, 5, 30], [124, 24, 60], [24, 4, 12], [255, 130, 116]]
 
-# CARDBOARD WIREFRAME
-# colRange = [[77, 172], [53, 152], [22, 118]]
-# Turn on outlines and remove the black dots. Also make them move really slow
-
-# RED
-# colRange = [[16, 226], [2, 66], [6, 69]]
-# colRange = [[226, 66, 69], [16, 2, 6]]
-
-# SUNRISE
-# colRange = [[61, 234], [20, 163], [15, 81]]
-
-# CITY
-# colRange = [[67, 155], [62, 149], [87, 159]]
-
-# SUNSET
-# colRange = [[40, 254], [8, 115], [15, 77]]
-
-# Rishabh's Blue/Purple Thing
-# colRange = [[104, 24, 28], [22, 12, 63]]
-
-# My (better) analogous blue
-# colRange = [[1, 155], [22, 193], [56, 253]]
-
-# Embers
-# colRange = [[40, 30, 40], [12, 9, 10]]
-
-# White to Red
-# colRange = [[255, 255, 255], [218, 205, 144], [174, 116, 84], [72, 44, 72], [120, 32, 61]]
-
-# Dark Blue to Red to Yellow (THIS IS THE GOOD ONE FROM THE VIDEO)
-# colRange = [[255, 207, 69], [255, 174, 70], [254, 78, 66], [104, 0, 52], [63, 0, 47], [32, 2, 47]]
-# colRange.reverse()
-
-# White to Blue Glower
-# colRange = [[255, 255, 255], [133, 202, 242], [67, 115, 160], [44, 43, 65], [26, 26, 26]]
-# colRange.reverse()
-
-# # Noxus RED
-# colRange = [[32, 25, 23], [81, 79, 80], [114, 63, 64], [207, 126, 43]]
-# colRange.reverse()
-
-# Pyke Bartender Scene
-# colRange = [[38, 27, 7], [2, 2, 2]]
-
-# Mint
-# colRange = [[201, 210, 197], [132, 169, 139], [81, 121, 110], [54, 78, 81], [47, 62, 70]]
-# colRange.reverse()
-
-# Website
-# colRange = [[253, 246, 227], [253, 246, 227], [220, 50, 47], [3, 7, 18], [3, 7, 18]]
-
-# Dark Blurple
-colRange = [(31, 8, 45), (33, 13, 55), (33, 21, 66), (34, 29, 77), (40, 43, 88)]
-
-# Smutty Fire
-# colRange = [(42, 18, 14), (59, 25, 18), (76, 34, 20), (93, 44, 21), (111, 56, 20)]
-
-# Define starting and ending colors
-dark = (31, 8, 45)
-light = (40, 43, 88)
-
-# Generate gradient
-# colRange = generate_gradient(dark, light, 5)
-print(colRange)
-
-tileSize = 25
-tileSpacing = 0
+tileSize = 10
+tileSpacing = 2
 tileSizeVariance = 0
-TH = TileHandler(screen_width, screen_height, tileSize, Hex, tileSpacing, tileSizeVariance, colRange)
+
+wallProb = 0.6
+
+distanceFromTopLeft = 0.05
+TH = TileHandler(screen_width, screen_height, tileSize, Hex, tileSpacing, tileSizeVariance, backgroundBaseSearchedWallFoundColors, wallProb)
+startingIndex = int(int(distanceFromTopLeft * TH.gridSizeX) * TH.gridSizeY + int(distanceFromTopLeft * TH.gridSizeX))
+while TH.tiles[startingIndex].isWall:
+    startingIndex += 1
+tree = Tree(TH.tiles[startingIndex])
+tileIndex = 0
+stepOutput = None
 
 # ---------------- Main Game Loop
 last_time = time.time()
@@ -394,8 +305,8 @@ while running:
 
     # ---------------- Reset Variables and Clear screens
     mx, my = pygame.mouse.get_pos()
-    screen.fill(colRange[0])
-    screen2.fill(colRange[0])
+    screen.fill(backgroundBaseSearchedWallFoundColors[0])
+    screen2.fill(backgroundBaseSearchedWallFoundColors[0])
     screenT.fill((0, 0, 0, 0))
     screenUI.fill((0, 0, 0, 0))
     dt = time.time() - last_time
@@ -420,8 +331,39 @@ while running:
         if event.type == pygame.KEYUP:
             pass
 
+    for til in TH.tiles:
+        til.searched = False
+        til.isPartOfPath = False
+
+    if stepOutput is not None:
+        for nod in stepOutput:
+            nod.tile.isPartOfPath = True
+
+    for nod in tree.closed:
+        TH.get_tile_at_grid_position(round(nod[0]), round(nod[1])).searched = True
+
+    TH.tiles[startingIndex].isPartOfPath = True
+    TH.tiles[tileIndex].isPartOfPath = True
+
     TH.draw(screen2, False)
     TH.update()
+
+    if click:
+        distances = {}
+        for i, til in enumerate(TH.tiles):
+            d = distance((til.x, til.y), (mx, my))
+            if d < TH.size * 2:
+                distances[d] = i
+        tileIndex = distances[sorted(distances.keys())[0]]
+
+        # Search
+        if not TH.tiles[tileIndex].isWall:
+            tree.fullSearch(TH.tiles[int(tileIndex)])
+    if tree.final is not None:
+        for _ in range(int(len(TH.tiles) ** (1 / 2) / 20)):
+            stepOutput = tree.searchStep()
+            if stepOutput is not None:
+                break
 
     # ---------------- Updating Screen
     if toggle:
