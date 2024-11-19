@@ -58,7 +58,7 @@ class Endesga:
 # Defining some more variables to use in the game loop
 oscillating_random_thing = 0
 ShakeCounter = 0
-toggle = True
+toggle = 2
 click = False
 
 
@@ -105,7 +105,7 @@ class TileHandler:
                 self.tile_map[(round(tile.x), round(tile.y))] = tile  # Map position to tile
 
         for tile in self.tiles:
-            dist = (distance((tile.x, tile.y), (self.maxWidth, self.maxHeight)) / distance((0, 0), (self.maxWidth, self.maxHeight)))
+            dist = (distance((tile.x, tile.y), (self.maxWidth, self.maxHeight))) / (distance((0, 0), (self.maxWidth, self.maxHeight)))
             if random.random() < (self.wallProb * (1 - dist) ** 0.3):
                 tile.isWall = True
                 tile.momentum = 1
@@ -132,11 +132,11 @@ class TileHandler:
                     tile.adjacent.append(grid_dict[(neighbor_grid_x, neighbor_grid_y)])
 
     def aggregate(self):
-        for _ in range(1):
+        for _ in range(2):
             shifts = []
             for tile in self.tiles:
                 momentumSum = sum([adj.momentum for adj in tile.adjacent]) / len(tile.adjacent)
-                shifts.append((momentumSum - tile.momentum) / 1)
+                shifts.append((momentumSum - tile.momentum) / 3)
             for _, tile in enumerate(self.tiles):
                 tile.momentum += shifts[_]
         for _, tile in enumerate(self.tiles):
@@ -265,7 +265,7 @@ class Tree:
                     # Check if the tile is already in the open set
                     if (adj.x, adj.y) in self.openPositions:
                         node = self.openPositions[(adj.x, adj.y)]
-                        tentative_g = current.g + 1
+                        tentative_g = current.g + 2.29129 * (tileSize + tileSpacing) # scale factor is sqrt(3^2 + (3/2)^2)
                         if tentative_g < node.g:
                             node.g = tentative_g
                             node.f = node.g + node.h
@@ -281,18 +281,21 @@ class Tree:
                     self.openPositions[(adj.x, adj.y)] = child
         return None
 
+    def draw(self):
+        pass
+
 
 backgroundBaseSearchedWallFoundColors = [[19, 2, 8], [49, 5, 30], [124, 24, 60], [24, 4, 12], [255, 130, 116]]
 
-tileSize = 3
-tileSpacing = 2
+tileSize = 4
+tileSpacing = 0
 tileSizeVariance = 0
 
-wallProb = 0.6
+wallProb = 0.55
 
 distanceFromTopLeft = 0.05
 TH = TileHandler(screen_width, screen_height, tileSize, Hex, tileSpacing, tileSizeVariance, backgroundBaseSearchedWallFoundColors, wallProb)
-startingIndex = int(int(distanceFromTopLeft * TH.gridSizeX) * TH.gridSizeY + TH.gridSizeY - int(distanceFromTopLeft * TH.gridSizeX))
+startingIndex = round(round(distanceFromTopLeft * TH.gridSizeX) * TH.gridSizeY + TH.gridSizeY - round(distanceFromTopLeft * TH.gridSizeX))
 while TH.tiles[startingIndex].isWall:
     startingIndex += 1
 tree = Tree(TH.tiles[startingIndex])
@@ -328,7 +331,8 @@ while running:
             if event.key == pygame.K_ESCAPE:
                 running = False
             if event.key == pygame.K_SPACE:
-                toggle = not toggle
+                toggle += 1
+                toggle = toggle % 3
         if event.type == pygame.KEYUP:
             pass
 
@@ -354,25 +358,25 @@ while running:
         distances = {}
         for i, til in enumerate(TH.tiles):
             d = distance((til.x, til.y), (mx, my))
-            if d < TH.size * 2:
+            if d < TH.size * 50 and not til.isWall:
                 distances[d] = i
         tileIndex = distances[sorted(distances.keys())[0]]
 
         # Search
-        if not TH.tiles[tileIndex].isWall:
-            tree.fullSearch(TH.tiles[int(tileIndex)])
+        tree.fullSearch(TH.tiles[int(tileIndex)])
     if tree.final is not None:
-        for _ in range(int(len(TH.tiles) ** (1 / 2) / 20)):
+        for _ in range(int(len(TH.tiles) ** 0.9 / 100)):
             stepOutput = tree.searchStep()
             if stepOutput is not None:
                 break
 
     # ---------------- Updating Screen
     if toggle:
-        draw_text(screenUI, Endesga.debug_red, better_font40, 20, screen_height - 40, str(round(clock.get_fps())), Endesga.black, 3)
         pygame.mouse.set_visible(False)
         pygame.draw.circle(screenUI, Endesga.black, (mx + 1, my + 1), 5, 1)
         pygame.draw.circle(screenUI, Endesga.white, (mx, my), 5, 1)
+        if toggle == 2:
+            draw_text(screenUI, Endesga.debug_red, better_font40, 20, screen_height - 40, str(round(clock.get_fps())), Endesga.black, 3)
     screen.blit(screen2, (shake[0], shake[1]))
     screen.blit(screenT, (0, 0))
     screen.blit(screenUI, (0, 0))
