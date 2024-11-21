@@ -214,6 +214,17 @@ class Node:
         self.h = h
         self.children = [] if children is None else children
 
+        self.displaySpacing = 0
+        self.spacing = 10
+
+
+class DrawingNode:
+    def __init__(self, parent, depth):
+        self.parent = parent
+        self.depth = depth
+        self.horizontalRank = 0
+        self.children = []
+
 
 def getPath(finalNode):
     out = []
@@ -221,6 +232,80 @@ def getPath(finalNode):
         out.append(finalNode.parent)
         finalNode = finalNode.parent
     return out
+
+
+def calculateRowCountRecursor(node, tre, runningList, searchedPositions, drawingNodeParent):
+    for adj in node.tile.adjacent:
+        if (adj.x, adj.y) in tre.closed and (adj.x, adj.y) not in searchedPositions:
+            child_node = DrawingNode(drawingNodeParent, drawingNodeParent.depth + 1)
+            drawingNodeParent.children.append(child_node)
+            searchedPositions.append((adj.x, adj.y))
+            depth_index = tre.openPositions[(adj.x, adj.y)].g - 1
+            if 0 <= depth_index < len(runningList):
+                runningList[depth_index] += 1
+            runningList = calculateRowCountRecursor(
+                tre.openPositions[(adj.x, adj.y)], tre, runningList, searchedPositions, child_node
+            )
+    return runningList
+
+
+def calculateSpacingRecursor(node, runningNodeList):
+    if node.depth < len(runningNodeList):
+        runningNodeList[node.depth].append(node)
+    for iChild, child in enumerate(node.children):
+        child.horizontalRank = node.horizontalRank + iChild + 1
+        runningNodeList = calculateSpacingRecursor(child, runningNodeList)
+    return runningNodeList
+
+
+def draw(width, height, tre, root):
+    path = 1000
+    runningList = [0] * path
+    searchedPositions = []
+    drawingRoot = DrawingNode(root, 0)
+
+
+    # Calculate row counts and node hierarchy
+    runningList = calculateRowCountRecursor(root, tre, runningList, searchedPositions, drawingRoot)
+    runningNodeList = calculateSpacingRecursor(drawingRoot, [[] for _ in range(path)])
+
+
+    # Create surface
+    sur = pygame.Surface((width, height)).convert_alpha()
+    sur.fill((0, 0, 0, 0))  # Transparent background
+
+
+    # Calculate the total depth of the tree and maximum width of any layer
+    total_depth = len([layer for layer in runningNodeList if layer])  # Count non-empty layers
+    max_width = max(len(layer) for layer in runningNodeList if layer)  # Maximum nodes in any layer
+
+
+    # Draw the tree
+    node_positions = {}  # Store positions of nodes for drawing lines
+    for y, layer in enumerate(runningNodeList):
+        if layer:
+            layer = sorted(layer, key=lambda n: n.horizontalRank)
+            layer_width = len(layer)
+
+
+            # Center nodes horizontally within the window width
+            horizontal_offset = (width - (layer_width * (width // (max_width + 1)))) // 2
+            for x, node in enumerate(layer):
+                pos_x = horizontal_offset + (x * (width // (max_width + 1)))
+                pos_y = y * (height // (total_depth + 1))  # Space nodes vertically, centered
+                pygame.draw.circle(sur, (255, 255, 255), (pos_x, pos_y), 5)
+                node_positions[node] = (pos_x, pos_y)
+
+
+    # Draw lines between parent and children
+    for node, pos in node_positions.items():
+        for child in node.children:
+            child_pos = node_positions.get(child, None)
+            if child_pos:
+                pygame.draw.line(sur, (200, 200, 200), pos, child_pos, 2)  # Line from parent to child
+
+
+    return sur
 
 
 class Tree:
@@ -265,7 +350,7 @@ class Tree:
                     # Check if the tile is already in the open set
                     if (adj.x, adj.y) in self.openPositions:
                         node = self.openPositions[(adj.x, adj.y)]
-                        tentative_g = current.g + 2.29129 * (tileSize + tileSpacing) # scale factor is sqrt(3^2 + (3/2)^2)
+                        tentative_g = current.g + 1
                         if tentative_g < node.g:
                             node.g = tentative_g
                             node.f = node.g + node.h
@@ -281,26 +366,25 @@ class Tree:
                     self.openPositions[(adj.x, adj.y)] = child
         return None
 
-    def draw(self):
-        pass
-
 
 backgroundBaseSearchedWallFoundColors = [[19, 2, 8], [49, 5, 30], [124, 24, 60], [24, 4, 12], [255, 130, 116]]
+splitProportion = 0.75
 
-tileSize = 4
+tileSize = 10
 tileSpacing = 0
 tileSizeVariance = 0
 
-wallProb = 0.55
+wallProb = 0.5
 
 distanceFromTopLeft = 0.05
-TH = TileHandler(screen_width, screen_height, tileSize, Hex, tileSpacing, tileSizeVariance, backgroundBaseSearchedWallFoundColors, wallProb)
-startingIndex = round(round(distanceFromTopLeft * TH.gridSizeX) * TH.gridSizeY + TH.gridSizeY - round(distanceFromTopLeft * TH.gridSizeX))
+TH = TileHandler(screen_width * splitProportion, screen_height, tileSize, Hex, tileSpacing, tileSizeVariance, backgroundBaseSearchedWallFoundColors, wallProb)
+startingIndex = round(round(distanceFromTopLeft * TH.gridSizeX) * TH.gridSizeY + TH.gridSizeY + round(distanceFromTopLeft * TH.gridSizeX))
 while TH.tiles[startingIndex].isWall:
     startingIndex += 1
 tree = Tree(TH.tiles[startingIndex])
 tileIndex = None
 stepOutput = None
+treeSurface = None
 
 # ---------------- Main Game Loop
 last_time = time.time()
@@ -365,10 +449,14 @@ while running:
         # Search
         tree.fullSearch(TH.tiles[int(tileIndex)])
     if tree.final is not None:
-        for _ in range(int(len(TH.tiles) ** 0.9 / 100)):
+        for _ in range(int(len(TH.tiles) ** 0.8 / 100)):
             stepOutput = tree.searchStep()
             if stepOutput is not None:
                 break
+
+    treeSurface = draw(screen_width * (1 - splitProportion), screen_height, tree, tree.root)
+    if treeSurface is not None:
+        screen2.blit(treeSurface, (screen_width * splitProportion, 0))
 
     # ---------------- Updating Screen
     if toggle:
