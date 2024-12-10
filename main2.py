@@ -6,6 +6,7 @@ from text import draw_text
 from calcs import distance
 from calcs import ang, normalize_angle
 from calcs import draw_arrow
+import copy
 
 pygame.init()
 
@@ -55,24 +56,16 @@ class Endesga:
     network_red = [127, 45, 41]
 
 
-# Defining some more variables to use in the game loop
-oscillating_random_thing = 0
-ShakeCounter = 0
-toggle = 2
-click = False
-
-
 class TileHandler:
-    def __init__(self, width, height, size, tileType, spacing, sizeVariance, backgroundBaseSearchedWallFoundCols, wallSpawnProb):
+    def __init__(self, width, height, size, tileType, spacing, backgroundBaseSearchedWallPathKnownCols, wallSpawnProb):
         self.maxWidth = width
         self.maxHeight = height
         self.size = size
         self.spacing = spacing
         self.tileType = tileType
-        self.sizeVariance = sizeVariance
         self.tiles = []
         self.tile_map = {}  # Position-to-tile map
-        self.backgroundBaseSearchedWallFoundCols = backgroundBaseSearchedWallFoundCols
+        self.backgroundBaseSearchedWallPathKnownCols = backgroundBaseSearchedWallPathKnownCols
         self.shifter = [0, 0]
         self.shifterMomentum = [0, 0]
         self.wallProb = wallSpawnProb
@@ -80,7 +73,7 @@ class TileHandler:
         if tileType == Hex:
             self.horizontal_distance = (3 / 2 * size) + spacing
             self.vertical_distance = (math.sqrt(3) * size) + spacing
-            self.gridSizeX = int(width / self.horizontal_distance)
+            self.gridSizeX = int(width / self.horizontal_distance) + 2
             self.gridSizeY = int(height / self.vertical_distance) + 2
         else:
             raise NotImplementedError("Tile type not supported")
@@ -97,7 +90,7 @@ class TileHandler:
                     y_pos = self.vertical_distance * y
                     if x % 2 == 1:
                         y_pos += self.vertical_distance / 2
-                    tile = self.tileType(x, y, x_pos, y_pos, self.size, self.sizeVariance)
+                    tile = self.tileType(x, y, x_pos, y_pos, self.size)
                 else:
                     raise NotImplementedError("Tile type not supported")
 
@@ -144,10 +137,11 @@ class TileHandler:
 
     def update(self):
         for _, tile in enumerate(self.tiles):
-            tile.col = self.backgroundBaseSearchedWallFoundCols[1]
-            tile.col2 = self.backgroundBaseSearchedWallFoundCols[2]
-            tile.wallCol = self.backgroundBaseSearchedWallFoundCols[3]
-            tile.pathCol = self.backgroundBaseSearchedWallFoundCols[4]
+            tile.col = self.backgroundBaseSearchedWallPathKnownCols[1]
+            tile.col2 = self.backgroundBaseSearchedWallPathKnownCols[2]
+            tile.wallCol = self.backgroundBaseSearchedWallPathKnownCols[3]
+            tile.pathCol = self.backgroundBaseSearchedWallPathKnownCols[4]
+            tile.knownCol = self.backgroundBaseSearchedWallPathKnownCols[5]
 
     def draw(self, s, showArrows):
         for tile in self.tiles:
@@ -158,32 +152,33 @@ class TileHandler:
 
 
 class Tile:
-    def __init__(self, grid_x, grid_y, x, y, size, sizeVariance, col=(0, 0, 0), col2=(0, 0, 0), wallCol=(0, 0, 0), pathCol=(0, 0, 0)):
+    def __init__(self, grid_x, grid_y, x, y, size, col=(0, 0, 0), col2=(0, 0, 0), wallCol=(0, 0, 0), pathCol=(0, 0, 0), knownCol=(0, 0, 0)):
         self.grid_x = grid_x
         self.grid_y = grid_y
         self.x = x
         self.y = y
         self.originalSize = size
-        self.sizeVariance = sizeVariance
-        self.size = size + random.randint(-self.sizeVariance, self.sizeVariance)
+        self.size = size
         self.col = col
         self.col2 = col2
         self.wallCol = wallCol
         self.pathCol = pathCol
+        self.knownCol = knownCol
         self.adjacent = []
         self.colIndex = random.uniform(0, 1)
         self.momentum = 0
         self.searched = False
         self.isWall = False
         self.isPartOfPath = False
+        self.known = False
 
     def draw(self, s):
-        raise NotImplementedError
+        pass
 
 
 class Hex(Tile):
-    def __init__(self, grid_x, grid_y, x, y, size, sizeVariance):
-        super().__init__(grid_x, grid_y, x, y, size, sizeVariance)
+    def __init__(self, grid_x, grid_y, x, y, size):
+        super().__init__(grid_x, grid_y, x, y, size)
 
     def draw(self, s):
         points = [(self.x + self.size * math.cos(math.pi / 3 * angle), self.y + self.size * math.sin(math.pi / 3 * angle)) for angle in range(6)]
@@ -194,6 +189,8 @@ class Hex(Tile):
         else:
             if self.searched:
                 pygame.draw.polygon(s, self.col2, points)
+            elif self.known:
+                pygame.draw.polygon(s, self.knownCol, points)
             else:
                 pygame.draw.polygon(s, self.col, points)
 
@@ -214,185 +211,13 @@ class Node:
         self.h = h
         self.children = [] if children is None else children
 
-        self.displaySpacing = 0
-        self.spacing = 10
-
-
-class DrawingNode:
-    def __init__(self, parent, depth):
-        self.parent = parent
-        self.depth = depth
-        self.horizontalRank = 0
-        self.children = []
-        self.highlighted = False
-        self.isPath = False
-
 
 def getPath(finalNode):
-    """
-    Marks all nodes in the final path and returns the path.
-    Resets previous path markings for consistency.
-    """
-    path = []
-    current = finalNode
-
-    # Clear all previous path markings
-    while current:
-        current.tile.isPartOfPath = False
-        current = current.parent
-
-    current = finalNode
-    while current is not None:
-        current.tile.isPartOfPath = True  # Mark as part of the path
-        path.append(current)
-        current = current.parent
-
-    return path[::-1]  # Reverse to get the path from root to final
-
-
-def calculateRowCountRecursor(node, tre, runningList, searchedPositions, drawingNodeParent, node_map):
-    """
-    Recursively calculates row counts and builds the drawing tree.
-    Ensures all searched nodes are included and avoids incorrect path markings.
-    """
-    for adj in node.tile.adjacent:
-        tile_key = (adj.x, adj.y)
-
-        # Skip nodes already processed
-        if tile_key in searchedPositions:
-            continue
-
-        # Process closed nodes
-        if tile_key in tre.closed:
-            # Retrieve or create a DrawingNode
-            if tile_key in node_map:
-                child_node = node_map[tile_key]
-            else:
-                child_node = DrawingNode(drawingNodeParent, drawingNodeParent.depth + 1)
-                child_tile = tre.closed[tile_key].tile
-
-                # Update child properties
-                child_node.isPath = child_tile.isPartOfPath
-                child_node.highlighted = child_tile.searched
-                node_map[tile_key] = child_node
-
-            # Append child node to parent's children
-            drawingNodeParent.children.append(child_node)
-
-            # Mark tile as searched
-            searchedPositions.add(tile_key)
-
-            # Update row counts for the depth
-            depth_index = tre.closed[tile_key].g - 1
-            if 0 <= depth_index < len(runningList):
-                runningList[depth_index] += 1
-
-            # Recursively process child node
-            calculateRowCountRecursor(tre.closed[tile_key], tre, runningList, searchedPositions, child_node, node_map)
-
-    return runningList
-
-
-def calculateSpacingRecursor(node, runningNodeList, horizontalRankTracker, maxWidth):
-    """
-    Assigns horizontal ranks to nodes, ensuring parent nodes align with their children.
-    """
-    # Ensure the tracker has an entry for the current depth
-    while len(horizontalRankTracker) <= node.depth:
-        horizontalRankTracker.append(0)
-
-    # Recurse for children first
-    for child in node.children:
-        calculateSpacingRecursor(child, runningNodeList, horizontalRankTracker, maxWidth)
-
-    # Align parent node based on children
-    if node.children:
-        child_positions = [child.horizontalRank for child in node.children]
-        node.horizontalRank = sum(child_positions) / len(child_positions)
-    else:
-        # Assign a unique rank for nodes without children
-        node.horizontalRank = horizontalRankTracker[node.depth]
-        horizontalRankTracker[node.depth] += 1
-
-    # Add the node to its corresponding depth list
-    while len(runningNodeList) <= node.depth:
-        runningNodeList.append([])
-    if node not in runningNodeList[node.depth]:
-        runningNodeList[node.depth].append(node)
-
-    return runningNodeList
-
-
-def draw(width, height, tre, root, cols):
-    """
-    Draws the tree structure on a surface with parent nodes roughly aligned with their children,
-    ensuring rows are centered horizontally when necessary.
-    """
-    path = 1000
-    runningList = [0] * path
-    searchedPositions = set()
-    node_map = {}  # Map to ensure unique nodes per tile
-    drawingRoot = DrawingNode(root, 0)
-    drawingRoot.isPath = True
-
-    # Calculate row counts and node hierarchy
-    calculateRowCountRecursor(root, tre, runningList, searchedPositions, drawingRoot, node_map)
-    runningNodeList = calculateSpacingRecursor(drawingRoot, [[] for _ in range(path)], [], width)
-
-    # Create surface
-    sur = pygame.Surface((width, height)).convert_alpha()
-    sur.fill((0, 0, 0, 0))  # Transparent background
-
-    # Calculate total depth
-    total_depth = len([layer for layer in runningNodeList if layer])
-
-    # Draw the tree
-    displaySize = 5
-    node_positions = {}
-    for y, layer in enumerate(runningNodeList):
-        if layer:
-            # Sort nodes by their horizontal rank
-            layer = sorted(layer, key=lambda n: n.horizontalRank)
-
-            # Determine centering offset
-            min_rank = min(node.horizontalRank for node in layer)
-            max_rank = max(node.horizontalRank for node in layer)
-            layer_width = max_rank - min_rank + 1
-
-            # Center the row if it is shifted off-center
-            total_width = layer_width * (width / (layer_width + 1))
-            row_center = (min_rank + max_rank) / 2
-            center_offset = (width / 2) - (row_center * (width / layer_width))
-
-            for node in layer:
-                # Adjust node positions based on `horizontalRank` and centering offset
-                pos_x = (node.horizontalRank - min_rank) * (width / layer_width) + center_offset
-                pos_y = 20 + y * (height // (total_depth + 1))
-
-                # Draw nodes
-                if node.isPath:
-                    pygame.draw.circle(sur, cols[4], (int(pos_x), int(pos_y)), displaySize)
-                elif node.highlighted:
-                    pygame.draw.circle(sur, cols[2], (int(pos_x), int(pos_y)), displaySize)
-                else:
-                    pygame.draw.circle(sur, cols[1], (int(pos_x), int(pos_y)), displaySize)
-
-                # Store node positions for connecting lines
-                node_positions[node] = (int(pos_x), int(pos_y))
-
-    # Draw lines between parent and children
-    for node, pos in node_positions.items():
-        for child in node.children:
-            child_pos = node_positions.get(child, None)
-            if child_pos:
-                pygame.draw.line(sur, (200, 200, 200), pos, child_pos, 2)
-
-    for node in node_positions:
-        if node.isPath:
-            pos_x, pos_y = node_positions[node]
-            pygame.draw.circle(sur, cols[4], (int(pos_x), int(pos_y)), displaySize)
-
-    return sur
+    out = [finalNode]
+    while finalNode.parent is not None:
+        out.append(finalNode.parent)
+        finalNode = finalNode.parent
+    return out
 
 
 class Tree:
@@ -402,14 +227,8 @@ class Tree:
         self.open = [self.root]
         self.openPositions = {(self.root.tile.x, self.root.tile.y): self.root}
         self.closed = {}
+        self.closedPositions = set()
         self.found = False
-
-    def resetPathFlags(tre):
-        """Reset all isPath flags to False before starting a new search."""
-        for node in tre.closed.values():
-            node.isPath = False
-        for node in tre.open:
-            node.isPath = False
 
     def fullSearch(self, final):
         self.open = [self.root]
@@ -417,24 +236,20 @@ class Tree:
         self.closed = {}
         self.final = final
         self.found = False
-        self.resetPathFlags()
 
-    def searchStep(tre):
-        """
-        A* Search Step implementation ensuring proper path flagging
-        and inclusion of all searched nodes without disrupting the final path.
-        """
-        if not tre.found:
-            if len(tre.open) > 0:
+    def searchStep(self, nodeGraph):
+        if not self.found:
+            if len(self.open) > 0:
                 # Get the node with the lowest f-value
-                current = min(tre.open, key=lambda n: n.f)
-                tre.open.remove(current)
-                tre.closed[(current.tile.x, current.tile.y)] = current
+                current = sorted(self.open, key=lambda n: n.f)[0]
+                self.open.remove(current)
+                self.closed[(current.tile.x, current.tile.y)] = current
+                self.closedPositions.add((int(current.tile.x), int(current.tile.y)))
 
-                # Check if the goal is reached
-                if (current.tile.x, current.tile.y) == (tre.final.x, tre.final.y):
-                    tre.found = True
-                    tre.final = None
+                # Check if we have reached the goal
+                if (current.tile.x, current.tile.y) == (self.final.x, self.final.y):
+                    self.found = True
+                    self.final = None
                     return getPath(current)
 
                 # Process adjacent tiles
@@ -442,44 +257,168 @@ class Tree:
                     if adj.isWall:
                         continue
 
-                    # Avoid nodes in the closed set
-                    if (adj.x, adj.y) in tre.closed:
+                    # Check if the tile is already in the closed set
+                    if (adj.x, adj.y) in self.closed:
                         continue
 
-                    # Check or update nodes in the open set
-                    if (adj.x, adj.y) in tre.openPositions:
-                        node = tre.openPositions[(adj.x, adj.y)]
+                    # Check if the tile is already in the open set
+                    if (adj.x, adj.y) in self.openPositions:
+                        node = self.openPositions[(adj.x, adj.y)]
                         tentative_g = current.g + 1
                         if tentative_g < node.g:
                             node.g = tentative_g
                             node.f = node.g + node.h
                             node.parent = current
+                            nodeGraph.counter += 1  # nodeGraph.getNode((adj.x, adj.y)).parent.children.remove(nodeGraph.getNode((adj.x, adj.y)))  # nodeGraph.getNode((adj.x, adj.y)).parent = nodeGraph.getNode((current.tile.x, current.tile.y))
                         continue
 
                     # Add new child node
-                    child = Node(current, adj, g=current.g + 1, f=current.g + 1 + distance((adj.x, adj.y), (tre.final.x, tre.final.y)))
-                    tre.open.append(child)
-                    tre.openPositions[(adj.x, adj.y)] = child
+                    child = Node(current, adj)
+                    child.g = current.g + 1
+                    child.h = distance((self.final.x, self.final.y), (adj.x, adj.y))
+                    child.f = child.g + child.h
+                    self.open.append(child)
+                    self.openPositions[(adj.x, adj.y)] = child
+                    if not nodeGraph.checkExists((adj.x, adj.y)):
+                        nodeGraph.addNode(nodeGraph.getNode((current.tile.x, current.tile.y)), (adj.x, adj.y), child.f)
+        return None
 
 
-backgroundBaseSearchedWallFoundColors = [[19, 2, 8], [49, 5, 30], [124, 24, 60], [24, 4, 12], [255, 130, 116]]
-splitProportion = 0.5
+class DrawingNode:
+    def __init__(self, parent, pos, fScore):
+        self.parent = parent
+        self.children = []
+        self.pos = pos
+        self.depth = 0
 
+        # Display stuff
+        self.x = None
+        self.y = None
+        self.horizontalRank = 0
+        self.fScore = fScore
+
+
+class Graph:
+    def __init__(self, backgroundBaseSearchedWallPathKnownCols):
+        self.root = None
+        self.knownPositions = {}
+        self.counter = 0
+        self.runningList = []
+        self.maxDepth = 0
+        self.displayPadding = 20
+
+        self.prevPath = []
+
+        self.backgroundBaseSearchedWallPathKnownCols = backgroundBaseSearchedWallPathKnownCols
+
+    def addNode(self, parent, pos, fScore=0):
+        new = DrawingNode(parent, (int(pos[0]), int(pos[1])), fScore)
+        # passing a new root node (when parent == None) acts like a full object reset
+        if parent is None:
+            self.__init__(self.backgroundBaseSearchedWallPathKnownCols)
+            new.depth = 0
+            self.root = new
+        else:
+            new.depth = parent.depth + 1
+            if new.depth > self.maxDepth:
+                self.maxDepth = new.depth
+            parent.children.append(new)
+        self.knownPositions[(int(pos[0]), int(pos[1]))] = new
+
+    def getNode(self, pos):
+        return self.knownPositions[(int(pos[0]), int(pos[1]))]
+
+    def checkExists(self, pos):
+        return (int(pos[0]), int(pos[1])) in self.knownPositions
+
+    def calculateSpacingRecursor(self, node, runningList, path=None):
+        # Sorting children to alternate left and right moving inwards (smallest fScore, the best node, is in the middle)
+        for c in node.children:
+            if path is not None and c.pos in path:
+                c.fScore -= 1e99
+        sortedChildren = sorted(node.children, key=lambda x: (x.fScore, x.pos))
+        node.children = []
+        for childI, child in enumerate(sortedChildren):
+            node.children.append(child) if childI % 2 == 0 else node.children.insert(0, child)
+
+        for child in node.children:
+            if child.depth > len(runningList) - 1:
+                runningList.append(1)
+            runningList[child.depth] += 1
+            child.horizontalRank = runningList[child.depth] - 1
+            runningList = self.calculateSpacingRecursor(child, runningList)
+        return runningList
+
+    def draw(self, width, height, path=None, closed=None):
+        if path is not None:
+            path = set([(int(t.tile.x), int(t.tile.y)) for t in path])
+        if closed is not None:
+            closed = set([(int(t[0]), int(t[1])) for t in closed])
+
+        # Create surface
+        sur = pygame.Surface((width, height)).convert_alpha()
+        sur.fill((0, 0, 0, 0))
+        if self.root is not None:
+            #                                      running list starts with size 1 at row 0
+            self.runningList = self.calculateSpacingRecursor(self.root, [1], path)
+            if self.root.x is None:
+                self.root.x = self.displayPadding + (width - 2 * self.displayPadding) / 2
+                self.root.y = self.displayPadding
+            self.surBuilderRecursor(sur, self.root, path, closed)
+        return sur
+
+    def surBuilderRecursor(self, sur, node, path=None, closed=None):
+        for childI, child in enumerate(node.children):
+            child.y = node.y + min(20, 1 / self.maxDepth * (sur.get_height() - 2 * self.displayPadding))
+            child.x = self.displayPadding + ((child.horizontalRank - self.runningList[child.depth] / 2) / self.runningList[child.depth] + 0.5) * (sur.get_width() - 2 * self.displayPadding)
+            pygame.draw.line(sur, (255, 255, 255), (node.x, node.y), (child.x, child.y))
+            self.surBuilderRecursor(sur, child, path, closed)
+        
+        col = self.backgroundBaseSearchedWallPathKnownCols[5]
+        if closed is not None:
+            if node.pos in closed:
+                col = self.backgroundBaseSearchedWallPathKnownCols[2]
+        if path is not None:
+            if node.pos in path:
+                col = self.backgroundBaseSearchedWallPathKnownCols[4]
+        pygame.draw.circle(sur, col, (node.x, node.y), 4)
+
+
+# Defining some more variables to use in the game loop
+oscillating_random_thing = 0
+ShakeCounter = 0
+toggle = 2
+click = False
+
+# Color scheme and node-graph size
+backgroundBaseSearchedWallPathKnownColors = [[19, 2, 8], [49, 5, 30], [128, 45, 64], [24, 4, 12], [255, 130, 116], [82, 20, 47]]
+splitProportion = 0.9
+
+# Tile display params
 tileSize = 10
-tileSpacing = 0
-tileSizeVariance = 0
+tileSpacing = 3
 
+# Wall spawning sparsity
 wallProb = 0.5
 
+# Create tile handler object
+TH = TileHandler(screen_width * splitProportion, screen_height, tileSize, Hex, tileSpacing, backgroundBaseSearchedWallPathKnownColors, wallProb)
+TH.update()
+
+# Find non-wall starting tile
 distanceFromTopLeft = 0.05
-TH = TileHandler(screen_width * splitProportion, screen_height, tileSize, Hex, tileSpacing, tileSizeVariance, backgroundBaseSearchedWallFoundColors, wallProb)
 startingIndex = round(round(distanceFromTopLeft * TH.gridSizeX) * TH.gridSizeY + TH.gridSizeY + round(distanceFromTopLeft * TH.gridSizeX))
 while TH.tiles[startingIndex].isWall:
     startingIndex += 1
 tree = Tree(TH.tiles[startingIndex])
+
+# Initialize user-clicked tile, (empty) path, and node-graph surface
 tileIndex = None
 stepOutput = None
 treeSurface = None
+
+# Create node-graph object
+graph = Graph(backgroundBaseSearchedWallPathKnownColors)
 
 # ---------------- Main Game Loop
 last_time = time.time()
@@ -488,8 +427,8 @@ while running:
 
     # ---------------- Reset Variables and Clear screens
     mx, my = pygame.mouse.get_pos()
-    screen.fill(backgroundBaseSearchedWallFoundColors[0])
-    screen2.fill(backgroundBaseSearchedWallFoundColors[0])
+    screen.fill(backgroundBaseSearchedWallPathKnownColors[0])
+    screen2.fill(backgroundBaseSearchedWallPathKnownColors[0])
     screenT.fill((0, 0, 0, 0))
     screenUI.fill((0, 0, 0, 0))
     dt = time.time() - last_time
@@ -515,25 +454,29 @@ while running:
         if event.type == pygame.KEYUP:
             pass
 
+    # Reset searched and highlighted
     for til in TH.tiles:
         til.searched = False
         til.isPartOfPath = False
+        til.known = False
 
+    # Selectively set isPartOfPath if a path is found
     if stepOutput is not None:
         for nod in stepOutput:
             nod.tile.isPartOfPath = True
 
+    # Selectively set known and searched regardless of if a path is found
+    for tilePos in tree.openPositions:
+        TH.get_tile_at_grid_position(round(tilePos[0]), round(tilePos[1])).known = True
     for nod in tree.closed:
         TH.get_tile_at_grid_position(round(nod[0]), round(nod[1])).searched = True
 
-    TH.tiles[startingIndex].isPartOfPath = True
-    if tileIndex is not None:
-        TH.tiles[tileIndex].isPartOfPath = True
-
+    # Draw tiles
     TH.draw(screen2, False)
-    TH.update()
 
+    # User click
     if click:
+        # Find the closest tile to the user's mouse, exclude walls
         distances = {}
         for i, til in enumerate(TH.tiles):
             d = distance((til.x, til.y), (mx, my))
@@ -541,17 +484,23 @@ while running:
                 distances[d] = i
         tileIndex = distances[sorted(distances.keys())[0]]
 
-        # Search
+        # Begin search
         tree.fullSearch(TH.tiles[int(tileIndex)])
+
+        # Add root to drawing node tree
+        graph.addNode(None, (TH.tiles[startingIndex].x, TH.tiles[startingIndex].y))
+
+    # Search step
     if tree.final is not None:
-        for _ in range(int(len(TH.tiles) ** 0.8 / 100)):
-            stepOutput = tree.searchStep()
+        for _ in range(int(len(TH.tiles) ** 0.8 / 200)):
+            stepOutput = tree.searchStep(graph)
             if stepOutput is not None:
                 break
 
-    treeSurface = draw(screen_width * (1 - splitProportion), screen_height, tree, tree.root, backgroundBaseSearchedWallFoundColors)
+    # Draw node graph
+    treeSurface = graph.draw(screen_width * (1 - splitProportion - 0.02), screen_height, stepOutput, tree.closedPositions)
     if treeSurface is not None:
-        screen2.blit(treeSurface, (screen_width * splitProportion, 0))
+        screen2.blit(treeSurface, (screen_width * (splitProportion + 0.02), 0))
 
     # ---------------- Updating Screen
     if toggle:
@@ -559,7 +508,12 @@ while running:
         pygame.draw.circle(screenUI, Endesga.black, (mx + 1, my + 1), 5, 1)
         pygame.draw.circle(screenUI, Endesga.white, (mx, my), 5, 1)
         if toggle == 2:
-            draw_text(screenUI, Endesga.debug_red, better_font40, 20, screen_height - 40, str(round(clock.get_fps())), Endesga.black, 3)
+            items = {round(clock.get_fps()): None, }
+            for i, label in enumerate(items.keys()):
+                string = str(label)
+                if items[label] is not None:
+                    string = f"{items[label]}: " + string
+                draw_text(screenUI, Endesga.debug_red, better_font40, 20, screen_height - (40 + 30 * i), string, Endesga.black, 3)
     screen.blit(screen2, (shake[0], shake[1]))
     screen.blit(screenT, (0, 0))
     screen.blit(screenUI, (0, 0))
